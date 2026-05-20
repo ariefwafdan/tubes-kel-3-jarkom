@@ -1,0 +1,181 @@
+import socket
+import time
+import argparse
+import threading
+
+PROXY_HOST = "127.0.0.1"
+PROXY_PORT = 8080
+
+SERVER_HOST = "127.0.0.1"
+UDP_PORT = 9000
+
+
+# =====================================================
+# TCP MODE
+# =====================================================
+
+def tcp_mode(path="/index.html"): # /index.html
+
+    print("\n=== MODE TCP ===")
+
+    try:
+
+        client_socket = socket.socket(
+            socket.AF_INET,
+            socket.SOCK_STREAM
+        )
+
+        client_socket.connect((PROXY_HOST, PROXY_PORT))
+
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {PROXY_HOST}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        )
+
+        client_socket.sendall(request.encode())
+
+        response = b""
+
+        while True:
+
+            data = client_socket.recv(4096)
+
+            if not data:
+                break
+
+            response += data
+
+        print("\n=== RESPONSE ===\n")
+
+        print(response.decode(errors="ignore"))
+
+        client_socket.close()
+
+    except Exception as e:
+
+        print("ERROR TCP:", e)
+
+
+# =====================================================
+# UDP MODE
+# =====================================================
+
+def udp_mode():
+
+    print("\n=== MODE UDP (QoS) ===")
+
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    udp_socket.settimeout(1)
+
+    rtt_list = []
+
+    lost = 0
+
+    for i in range(10):
+
+        try:
+
+            start = time.time()
+
+            message = f"Ping {i} {start}"
+
+            udp_socket.sendto(
+                message.encode(),
+                (SERVER_HOST, UDP_PORT)
+            )
+
+            data, _ = udp_socket.recvfrom(1024)
+
+            end = time.time()
+
+            rtt = (end - start) * 1000
+
+            rtt_list.append(rtt)
+
+            print(f"Ping {i}: {rtt:.2f} ms")
+
+        except socket.timeout:
+
+            print(f"Ping {i}: Request timed out")
+
+            lost += 1
+
+    print("\n=== QoS RESULT ===")
+
+    if rtt_list:
+
+        print(f"Min RTT: {min(rtt_list):.2f} ms")
+
+        print(f"Avg RTT: {sum(rtt_list)/len(rtt_list):.2f} ms")
+
+        print(f"Max RTT: {max(rtt_list):.2f} ms")
+
+        jitter = [
+            abs(rtt_list[i] - rtt_list[i - 1])
+            for i in range(1, len(rtt_list))
+        ]
+
+        if jitter:
+            print(f"Jitter: {sum(jitter)/len(jitter):.2f} ms")
+
+    print(f"Packet Loss: {(lost/10)*100:.0f}%")
+
+    udp_socket.close()
+
+
+# =====================================================
+# MULTI CLIENT TEST
+# =====================================================
+
+def multi_client_test():
+
+    threads = []
+
+    paths = [
+        "/index.html",
+        "/osi.html",
+        "/tcpip.html",
+        "/qos.html",
+        "/implementation.html"
+    ]
+
+    for path in paths:
+
+        t = threading.Thread(
+            target=tcp_mode,
+            args=(path,)
+        )
+
+        threads.append(t)
+
+        t.start()
+
+    for t in threads:
+        t.join()
+
+
+# =====================================================
+# MAIN
+# =====================================================
+
+parser = argparse.ArgumentParser()
+
+parser.add_argument(
+    "--mode",
+    choices=["tcp", "udp", "multi"],
+    required=True
+)
+
+args = parser.parse_args()
+
+if args.mode == "tcp":
+    tcp_mode()
+
+elif args.mode == "udp":
+    udp_mode()
+
+elif args.mode == "multi":
+    multi_client_test()
