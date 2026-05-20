@@ -1,0 +1,187 @@
+import socket
+import threading
+from datetime import datetime
+import os
+
+HOST = "0.0.0.0"
+TCP_PORT = 8000
+UDP_PORT = 9000
+
+ALLOWED_PROXY_IP = "127.0.0.1"
+
+
+# =====================================================
+# HTTP CLIENT HANDLER
+# =====================================================
+
+def handle_client(client_socket, client_address):
+
+    print(f"[THREAD] Thread baru dibuat untuk {client_address}")
+
+    try:
+
+        request = client_socket.recv(4096).decode(errors="ignore")
+
+        if not request:
+            client_socket.close()
+            return
+
+        print("\n=== REQUEST DITERIMA ===")
+        print(request)
+
+        # hanya menerima koneksi dari proxy
+        if client_address[0] != ALLOWED_PROXY_IP:
+            response = (
+                "HTTP/1.1 403 Forbidden\r\n"
+                "Content-Type: text/html\r\n\r\n"
+                "<h1>403 Forbidden</h1>"
+            ).encode()
+
+            client_socket.sendall(response)
+            client_socket.close()
+
+            print("[SECURITY] Direct client blocked")
+            return
+
+        request_line = request.split("\r\n")[0]
+
+        parts = request_line.split()
+
+        if len(parts) != 3:
+            raise Exception("Malformed HTTP Request")
+
+        method, path, version = parts
+
+        if method != "GET":
+            raise Exception("Only GET supported")
+
+        if path == "/":
+            path = "/index.html"
+
+        filename = path.lstrip("/")
+
+        if not os.path.exists(filename):
+            raise FileNotFoundError
+
+        with open(filename, "rb") as file:
+            content = file.read()
+
+        header = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/html; charset=utf-8\r\n"
+            f"Content-Length: {len(content)}\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        )
+
+        response = header.encode() + content
+
+        status = "200 OK"
+
+    except FileNotFoundError:
+
+        response = (
+            "HTTP/1.1 404 Not Found\r\n"
+            "Content-Type: text/html\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "<h1>404 Not Found</h1>"
+        ).encode()
+
+        status = "404 Not Found"
+
+        filename = "missing file"
+
+    except Exception as e:
+
+        print("[ERROR]", e)
+
+        response = (
+            "HTTP/1.1 500 Internal Server Error\r\n"
+            "Content-Type: text/html\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "<h1>500 Internal Server Error</h1>"
+        ).encode()
+
+        status = "500 Internal Server Error"
+
+        filename = "UNKNOWN"
+
+    now = datetime.now().strftime("%H:%M:%S")
+
+    print(
+        f"[{now}] "
+        f"IP: {client_address[0]} | "
+        f"File: {filename} | "
+        f"Status: {status}"
+    )
+
+    client_socket.sendall(response)
+
+    client_socket.close()
+
+
+# =====================================================
+# UDP SERVER
+# =====================================================
+
+def udp_server():
+
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    udp_socket.bind((HOST, UDP_PORT))
+
+    print(f"[UDP] Echo server running on port {UDP_PORT}")
+
+    while True:
+
+        data, addr = udp_socket.recvfrom(1024)
+
+        print(f"[UDP] Paket diterima dari {addr}")
+
+        udp_socket.sendto(data, addr)
+
+        print("[UDP] Payload dipantulkan kembali")
+
+
+# =====================================================
+# START UDP THREAD
+# =====================================================
+
+threading.Thread(target=udp_server, daemon=True).start()
+
+
+# =====================================================
+# TCP SERVER
+# =====================================================
+
+tcp_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+tcp_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+tcp_server.bind((HOST, TCP_PORT))
+
+tcp_server.listen(5)
+
+print(f"\nServer running on port {TCP_PORT}/{UDP_PORT},")
+
+print("Thread pool siap.")
+
+
+# =====================================================
+# MAIN LOOP
+# =====================================================
+
+while True:
+
+    client_socket, client_address = tcp_server.accept()
+
+    print(f"\n[CONNECTION] Client terhubung: {client_address}")
+
+    thread = threading.Thread(
+        target=handle_client,
+        args=(client_socket, client_address)
+    )
+
+    thread.start()
