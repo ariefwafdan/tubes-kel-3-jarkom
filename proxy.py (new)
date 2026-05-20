@@ -1,0 +1,186 @@
+import socket
+import threading
+import os
+import time
+from datetime import datetime
+
+PROXY_HOST = "0.0.0.0"
+PROXY_PORT = 8080
+
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = 8000
+
+CACHE_FOLDER = "cache"
+
+os.makedirs(CACHE_FOLDER, exist_ok=True)
+
+cache_lock = threading.Lock()
+
+proxy_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+proxy_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+proxy_socket.bind((PROXY_HOST, PROXY_PORT))
+
+proxy_socket.listen(5)
+
+print(f"Proxy listening on port {PROXY_PORT},")
+
+print("Multithreading aktif.")
+
+
+def receive_full_response(sock):
+
+    response = b""
+
+    while True:
+
+        data = sock.recv(4096)
+
+        if not data:
+            break
+
+        response += data
+
+    return response
+
+
+def handle_client(client_socket, client_address):
+
+    print(f"\n[THREAD] Thread baru dibuat untuk {client_address}")
+
+    start_time = time.time()
+
+    try:
+
+        request = client_socket.recv(4096)
+
+        request_text = request.decode(errors="ignore")
+
+        print("\n=== REQUEST CLIENT ===")
+        print(request_text)
+
+        request_line = request_text.split("\r\n")[0]
+
+        method, path, version = request_line.split()
+
+        if path == "/":
+            path = "/index.html"
+
+        cache_name = path.replace("/", "_")
+
+        cache_file = os.path.join(CACHE_FOLDER, cache_name)
+
+        # =====================================================
+        # CACHE HIT
+        # =====================================================
+
+        if os.path.exists(cache_file):
+
+            with cache_lock:
+
+                print("[CACHE] HIT")
+
+                with open(cache_file, "rb") as file:
+                    response = file.read()
+
+            client_socket.sendall(response)
+
+            cache_status = "HIT"
+
+        # =====================================================
+        # CACHE MISS
+        # =====================================================
+
+        else:
+
+            print("[CACHE] MISS")
+
+            server_socket = socket.socket(
+                socket.AF_INET,
+                socket.SOCK_STREAM
+            )
+
+            server_socket.settimeout(3)
+
+            server_socket.connect((SERVER_HOST, SERVER_PORT))
+
+            server_socket.sendall(request)
+
+            print("[FORWARD] Request diteruskan ke Web Server")
+
+            response = receive_full_response(server_socket)
+
+            server_socket.close()
+
+            # hanya cache response 200
+            if b"200 OK" in response:
+
+                with cache_lock:
+
+                    with open(cache_file, "wb") as file:
+                        file.write(response)
+
+                print("[CACHE] Response disimpan ke cache")
+
+            client_socket.sendall(response)
+
+            cache_status = "MISS"
+
+        end_time = time.time()
+
+        response_time = (end_time - start_time) * 1000
+
+        now = datetime.now().strftime("%H:%M:%S")
+
+        print(
+            f"[{now}] "
+            f"IP: {client_address[0]} | "
+            f"URL: {path} | "
+            f"Cache: {cache_status} | "
+            f"Response Time: {response_time:.2f} ms"
+        )
+
+    except socket.timeout:
+
+        response = (
+            "HTTP/1.1 504 Gateway Timeout\r\n"
+            "Content-Type: text/html\r\n"
+            "\r\n"
+            "<h1>504 Gateway Timeout</h1>"
+        ).encode()
+
+        client_socket.sendall(response)
+
+        print("[ERROR] 504 Gateway Timeout")
+
+    except Exception as e:
+
+        print("[ERROR]", e)
+
+        response = (
+            "HTTP/1.1 502 Bad Gateway\r\n"
+            "Content-Type: text/html\r\n"
+            "\r\n"
+            "<h1>502 Bad Gateway</h1>"
+        ).encode()
+
+        client_socket.sendall(response)
+
+        print("[ERROR] 502 Bad Gateway")
+
+    client_socket.close()
+
+
+while True:
+
+    client_socket, client_address = proxy_socket.accept()
+
+    print(f"\n[CONNECTION] Client masuk: {client_address}")
+
+    thread = threading.Thread(
+        target=handle_client,
+        args=(client_socket, client_address)
+    )
+
+    thread.start()
